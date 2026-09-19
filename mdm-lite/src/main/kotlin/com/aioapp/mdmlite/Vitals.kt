@@ -73,7 +73,10 @@ internal object Vitals {
         put("agent_version", BuildConfig.LIB_VERSION)
         // Only what the library can actually do. The server offers a device no command
         // outside this list.
-        put("capabilities", JSONArray(listOf("telemetry", "screen_capture", "app_control")))
+        // self_update: the host app can be updated remotely (silently when allowed to
+        // install apps, otherwise through Android's on-screen prompt).
+        put("capabilities", JSONArray(listOf("telemetry", "screen_capture", "app_control", "self_update")))
+        put("self_update_silent", Updater.silentCapable(ctx))
         put("capabilities_degraded", JSONArray())
         put("model", Build.MODEL)
         put("manufacturer", Build.MANUFACTURER)

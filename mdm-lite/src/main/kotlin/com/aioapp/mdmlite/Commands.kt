@@ -42,6 +42,8 @@ internal class Commands(
                     "app_clear_cache" -> onWebView(id, "cache cleared, reloaded") { it.clearCache(true); it.reload() }
                     "app_update_check" -> updateCheck(id)
                     "app_restart" -> restart(id)
+                    "app_update" -> Updater.run(app, client.base, store.deviceKey, store, id, c.optString("apk_url"),
+                        c.optJSONObject("payload")) { status, out -> ack(id, status, out) }
                     else -> ack(id, "failed", "not supported by MDM-lite: $type")
                 }
             } catch (t: Throwable) {
@@ -84,7 +86,7 @@ internal class Commands(
         main.post { RestartActivity.start(app) }
     }
 
-    private fun ack(id: String, status: String, output: String) {
+    fun ack(id: String, status: String, output: String) {
         val body = JSONObject().put("serial_number", serial()).put("status", status).put("output", output)
         val r = client.post("/api/v1/commands/$id/ack", body, store.deviceKey).result
         if (r != Client.Result.OK) Log.w("AioMdm", "ack $id ($status) failed: $r")

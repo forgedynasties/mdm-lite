@@ -7,7 +7,7 @@ import java.net.URL
 
 /** Minimal JSON-over-HTTP client (HttpURLConnection: no dependency for the host to carry). */
 internal class Client(serverUrl: String) {
-    private val base = serverUrl.trimEnd('/')
+    val base = serverUrl.trimEnd('/')
 
     enum class Result { OK, UNAUTHORIZED, FAILED }
 

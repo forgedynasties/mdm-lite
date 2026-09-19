@@ -27,6 +27,16 @@ internal class Store(ctx: Context) {
         get() = prefs.getString("apps_hash", "").orEmpty()
         set(v) { prefs.edit().putString("apps_hash", v).apply() }
 
+    /** The serial this device enrolled with; kept so its identity never changes. */
+    var enrolledSerial: String
+        get() = prefs.getString("enrolled_serial", "").orEmpty()
+        set(v) { prefs.edit().putString("enrolled_serial", v).apply() }
+
+    /** "cmdId|targetVersionCode|versionName" of an app update in flight ("" = none). */
+    var pendingUpdate: String
+        get() = prefs.getString("pending_update", "").orEmpty()
+        set(v) { prefs.edit().putString("pending_update", v).commit() } // commit: the process may die next
+
     /** Newest ApplicationExitInfo timestamp already reported. */
     var lastExitSeenMs: Long
         get() = prefs.getLong("last_exit_ms", 0L)

@@ -90,6 +90,8 @@ object AioMdm {
             Thread(r, "aio-mdm").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
         }
         executor.execute { Crashes.collectExitReasons(app, store) }
+        // An app update this app started: the new version acknowledges it.
+        executor.execute { Updater.settlePending(app, store) { id, st, out -> commands.ack(id, st, out) } }
         executor.scheduleWithFixedDelay(::tick, 5, config.checkinSeconds, TimeUnit.SECONDS)
         executor.scheduleWithFixedDelay(::checkBlank, 90, BLANK_CHECK_SECONDS, TimeUnit.SECONDS)
         // Keeps reporting (every ~15 min) when the app is backgrounded or the device dozes.
@@ -148,6 +150,16 @@ object AioMdm {
         }
     }
 
+    /** Progress of an app update from the install-status receiver ([status] null = progress only). */
+    internal fun reportUpdate(id: String, status: String?, output: String) {
+        if (!started) return
+        if (status == null) { report("app_update", output, "command $id"); return }
+        executor.execute {
+            store.pendingUpdate = ""
+            commands.ack(id, status, output)
+        }
+    }
+
     /** What MDM-lite is doing right now; null until [init] has run. */
     @JvmStatic
     fun status(): MdmStatus? {
@@ -189,7 +201,13 @@ object AioMdm {
     internal fun checkinNow(done: () -> Unit): Boolean {
         if (!started) return false
         executor.execute {
-            try { tick() } finally { done() }
+            try {
+                // Starting the process for the job already ran init's check-in a moment
+                // ago (same single-thread executor, so it has finished): don't send a
+                // second one 1-2 s later.
+                val fresh = lastCheckinResult == "ok" && System.currentTimeMillis() - lastCheckinAtMs < 60_000
+                if (!fresh) tick()
+            } finally { done() }
         }
         return true
     }
@@ -260,24 +278,58 @@ object AioMdm {
     private const val BLANK_CHECK_SECONDS = 120L
 
     private fun enroll(): Boolean {
+        val serial = serial()
         val body = JSONObject()
             .put("token", config.enrollToken)
-            .put("serial", serial())
+            .put("serial", serial)
             .put("product", Vitals.product())
             .put("model", Build.MODEL)
             .put("os_version", Build.VERSION.RELEASE ?: "")
         val resp = client.postForJson("/api/v1/enroll", body) ?: return false
         val key = resp.optString("device_key")
         if (key.isBlank()) return false
+        store.enrolledSerial = serial // first: serial() treats a stored key as a legacy enrollment
         store.deviceKey = key
-        Log.i(TAG, "enrolled as ${serial()}")
+        Log.i(TAG, "enrolled as $serial")
         return true
     }
 
-    @SuppressLint("HardwareIds")
+    /**
+     * The device's identity on the server. The host's explicit serial wins; otherwise the
+     * hardware serial when Android lets an ordinary app read it, else "android-<ANDROID_ID>".
+     * Whatever a device enrolled with is kept for good, so an enrolled device never turns
+     * into a new one on the server when this rule (or what the OS allows) changes.
+     */
     private fun serial(): String {
         config.serial?.takeIf { it.isNotBlank() }?.let { return it }
+        store.enrolledSerial.takeIf { it.isNotBlank() }?.let { return it }
+        val s = hardwareSerial() ?: androidIdSerial()
+        // An existing enrollment from before serials were remembered used the Android ID.
+        if (store.deviceKey.isNotEmpty()) return androidIdSerial().also { store.enrolledSerial = it }
+        return s
+    }
+
+    @SuppressLint("HardwareIds")
+    private fun androidIdSerial(): String {
         val id = Settings.Secure.getString(app.contentResolver, Settings.Secure.ANDROID_ID)
         return if (!id.isNullOrBlank()) "android-$id" else "unknown-${Build.MODEL}"
+    }
+
+    /**
+     * The hardware serial, or null. Build.getSerial() needs a privileged permission from
+     * Android 10 (it throws for a normal app); some vendor builds (TV boxes, POS) still
+     * expose ro.serialno / ro.boot.serialno to apps, so those are tried next.
+     */
+    @SuppressLint("HardwareIds", "MissingPermission")
+    private fun hardwareSerial(): String? {
+        fun ok(v: String?) = v?.trim()?.takeIf { it.isNotEmpty() && !it.equals(Build.UNKNOWN, true) && it != "0123456789ABCDEF" }
+        runCatching { ok(Build.getSerial()) }.getOrNull()?.let { return it }
+        for (key in listOf("ro.serialno", "ro.boot.serialno")) {
+            runCatching {
+                val sp = Class.forName("android.os.SystemProperties")
+                ok(sp.getMethod("get", String::class.java).invoke(null, key) as String?)
+            }.getOrNull()?.let { return it }
+        }
+        return null
     }
 }
