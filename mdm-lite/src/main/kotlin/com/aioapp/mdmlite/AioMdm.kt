@@ -89,6 +89,7 @@ object AioMdm {
         executor = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "aio-mdm").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
         }
+        migrateToHardwareSerial()
         executor.execute { Crashes.collectExitReasons(app, store) }
         // An app update this app started: the new version acknowledges it.
         executor.execute { Updater.settlePending(app, store) { id, st, out -> commands.ack(id, st, out) } }
@@ -295,10 +296,34 @@ object AioMdm {
     }
 
     /**
+     * Moves a device that is pinned to its ANDROID_ID onto its hardware serial, once, when
+     * the serial has become readable (a newer library, or an OS/vendor build that lets this
+     * app read ro.serialno). Clearing the device key makes the next check-in enroll under
+     * the new identity; the old "android-..." device is left behind on the server and can
+     * be deleted there. Devices whose serial stays unreadable are untouched.
+     */
+    private fun migrateToHardwareSerial() {
+        if (!config.serial.isNullOrBlank()) return
+        // A blank stored serial with a device key is an enrollment from before serials were
+        // remembered: serial() pins those to the ANDROID_ID, so they migrate too.
+        val stored = store.enrolledSerial.ifBlank {
+            if (store.deviceKey.isEmpty()) return else androidIdSerial()
+        }
+        if (!stored.startsWith(ANDROID_ID_PREFIX)) return
+        val hw = hardwareSerial() ?: return
+        Log.i(TAG, "identity moves from $stored to hardware serial $hw; re-enrolling")
+        store.enrolledSerial = hw
+        store.deviceKey = ""
+    }
+
+    private const val ANDROID_ID_PREFIX = "android-"
+
+    /**
      * The device's identity on the server. The host's explicit serial wins; otherwise the
      * hardware serial when Android lets an ordinary app read it, else "android-<ANDROID_ID>".
      * Whatever a device enrolled with is kept for good, so an enrolled device never turns
-     * into a new one on the server when this rule (or what the OS allows) changes.
+     * into a new one on the server when this rule (or what the OS allows) changes —
+     * except for the one move in [migrateToHardwareSerial].
      */
     private fun serial(): String {
         config.serial?.takeIf { it.isNotBlank() }?.let { return it }
@@ -312,7 +337,7 @@ object AioMdm {
     @SuppressLint("HardwareIds")
     private fun androidIdSerial(): String {
         val id = Settings.Secure.getString(app.contentResolver, Settings.Secure.ANDROID_ID)
-        return if (!id.isNullOrBlank()) "android-$id" else "unknown-${Build.MODEL}"
+        return if (!id.isNullOrBlank()) "$ANDROID_ID_PREFIX$id" else "unknown-${Build.MODEL}"
     }
 
     /**

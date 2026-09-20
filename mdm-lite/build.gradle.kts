@@ -15,7 +15,7 @@ android {
     defaultConfig {
         minSdk = 29
         consumerProguardFiles("consumer-rules.pro")
-        buildConfigField("String", "LIB_VERSION", "\"0.1.7\"")
+        buildConfigField("String", "LIB_VERSION", "\"0.1.8\"")
     }
     buildFeatures { buildConfig = true }
 
